@@ -8,6 +8,7 @@ import time
 import numpy as np
 import cv2
 import keyboard 
+from ctypes import c_ubyte, byref
 
 sys.path.append(os.getenv('MVCAM_COMMON_RUNENV') + "/Samples/Python/MvImport")
 # from MvImport.MvCameraControl_class import *
@@ -153,7 +154,7 @@ if __name__ == "__main__":
         print("error: input error!")
         sys.exit()
 
-    # ch:创建相机实例 | en:Creat Camera Object
+    # ch:创建相机实例 | en:Create Camera Object
     cam = MvCamera()
 
     # ch:选择设备并创建句柄 | en:Select device and create handle
@@ -181,21 +182,19 @@ if __name__ == "__main__":
             print("warning: Get Packet Size fail! ret[0x%x]" % nPacketSize)
     
     # Parameters
-    gain = 0
-    exposure_time = 1500
+    gain = 23.9
+    exposure_time = 3000
     line_rate = 17000
-    pixel_format = 35127316  # RGB8Packed
+    pixel_format = 35127316  # RGB8Packed - You can find this in MvImport/PixelType_header.py
     img_buffr = 7000
-    
+    height = 20
 
-    # ch:设置触发模式为off | en:Set trigger mode as off
-    ret = cam.MV_CC_SetEnumValue("TriggerMode", MV_TRIGGER_MODE_OFF)
+    ret = cam.MV_CC_SetIntValue("Height", height)
     if ret != 0:
-        print("error: set trigger mode fail! ret[0x%x]" % ret)
-        sys.exit()
+        print("error: set height fail! ret[0x%x]" % ret)
     else:
-        print("Trigger mode set to continuous.")
-
+        print(f"Height set to {height}")
+    
     # Exposure tme
     ret = cam.MV_CC_SetFloatValue("ExposureTime", exposure_time)
     if ret != 0:
@@ -249,16 +248,6 @@ if __name__ == "__main__":
     stParam = MVCC_INTVALUE()
     memset(byref(stParam), 0, sizeof(MVCC_INTVALUE))
 
-    
-
-    # ch:开始取流 | en:Start grab image
-    ret = cam.MV_CC_StartGrabbing()
-    if ret != 0:
-        print("error: start grabbing fail! ret[0x%x]" % ret)
-        sys.exit()
-    else:
-        print("Camera is grabbing!")
-
     stOutFrame = MV_FRAME_OUT()
     memset(byref(stOutFrame), 0, sizeof(stOutFrame))
 
@@ -267,55 +256,76 @@ if __name__ == "__main__":
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
+    # Frame counter
+    frame_counter = 0
+
+    # Callback function to handle frames
+    def frame_callback(pData, pFrameInfo, pUser):
+        global frame_counter
+        start = time.time()
+        # Cast the frame info to the appropriate structure
+        frame_info = ctypes.cast(pFrameInfo, ctypes.POINTER(MV_FRAME_OUT_INFO_EX)).contents
+
+        print("---------- Received a frame ----------")
+        print(f"Width: {frame_info.nWidth}")
+        print(f"Height: {frame_info.nHeight}")
+        print(f"Frame Number: {frame_info.nFrameNum}")
+        print(f"Frame Length: {frame_info.nFrameLen}")
+
+        # Check pixel format
+        if frame_info.enPixelType == 35127316:  # RGB8Packed
+            print("Pixel format is RGB8Packed. Processing frame.")
+
+            # Convert the frame buffer to an image
+            frame_data = ctypes.cast(pData, ctypes.POINTER(c_ubyte * frame_info.nFrameLen)).contents
+            image = np.ctypeslib.as_array(frame_data).reshape((frame_info.nHeight, frame_info.nWidth, 3))
+
+            # Save the image with a unique filename
+            filename = os.path.join(output_folder, f"image_{frame_info.nFrameNum}.bmp")
+            cv2.imwrite(filename, image)
+            print(f"Image saved as {filename}.")
+        else:
+            print(f"Unsupported pixel format: {frame_info.enPixelType}")
+        end = time.time()
+        print(f"Frame processing time: {end - start:.4f} seconds")
+        frame_counter += 1
+
+    # Register the callback function
+    CALLBACK_FUNC = ctypes.CFUNCTYPE(None, ctypes.POINTER(c_ubyte), ctypes.POINTER(MV_FRAME_OUT_INFO_EX), ctypes.c_void_p)
+    frame_callback_func = CALLBACK_FUNC(frame_callback)
+
     try:
+        # Set trigger mode to continuous
+        ret = cam.MV_CC_SetEnumValue("TriggerMode", MV_TRIGGER_MODE_OFF)  # Continuous mode
+        if ret != 0:
+            print(f"Error: Failed to set trigger mode to continuous! ret[0x{ret:x}]")
+
+        # Start grabbing in asynchronous mode
+        ret = cam.MV_CC_RegisterImageCallBackEx(frame_callback_func, None)
+        if ret != 0:
+            print(f"Error: Failed to register callback! ret[0x{ret:x}]")
+            raise Exception("Failed to register callback.")
+
+        ret = cam.MV_CC_StartGrabbing()
+        if ret != 0:
+            print(f"Error: Failed to start grabbing! ret[0x{ret:x}]")
+            raise Exception("Failed to start grabbing.")
+
         print("Press 'q' to stop the program.")
         while True:
-            # Press 'q' to stop the app
+            # Check if the user pressed 'q' to stop
             if keyboard.is_pressed('q'):
                 print("Stopping image capture...")
                 break
-
-            # Grab a frame
-            stIntValue = MVCC_INTVALUE()
-            ret = cam.MV_CC_GetIntValue("PayloadSize", stIntValue)
-            if ret == 0:
-                print(f"Payload Size: {stIntValue.nCurValue}")
-            else:
-                print(f"Error: Failed to get payload size! ret[0x{ret:x}]")
-
-            ret = cam.MV_CC_GetImageBuffer(stOutFrame, img_buffr)
-            if ret == 0 and stOutFrame.pBufAddr is not None:
-                print("---------- Received a frame ----------")
-                print("Width: %d \nHeight: %d \nnFrameNum: %d \nFrame length: %d" % (
-                    stOutFrame.stFrameInfo.nWidth, stOutFrame.stFrameInfo.nHeight, stOutFrame.stFrameInfo.nFrameNum, stOutFrame.stFrameInfo.nFrameLen))
-
-                if stOutFrame.stFrameInfo.enPixelType == 35127316:  # RGB8Packed
-                    print("Pixel format is RGB8Packed. Skipping decode.")
-
-                    # Start timing
-                    start_time = time.time()
-
-                    # Convert the frame buffer to an image
-                    frame_data = (c_ubyte * stOutFrame.stFrameInfo.nFrameLen).from_address(ctypes.addressof(stOutFrame.pBufAddr.contents))
-                    image = np.ctypeslib.as_array(frame_data).reshape((stOutFrame.stFrameInfo.nHeight, stOutFrame.stFrameInfo.nWidth, 3))
-
-                    # Save the image with a unique filename
-                    filename = os.path.join(output_folder, f"image_{stOutFrame.stFrameInfo.nFrameNum}.bmp")
-                    cv2.imwrite(filename, image)
-
-                    # End timing
-                    end_time = time.time()
-
-                    print(f"Image saved as {filename}.")
-                    print(f"Time taken: {end_time - start_time:.4f} seconds")
-            else:
-                print(f"Error: Failed to get frame! ret[0x{ret:x}]")
-            time.sleep(3)
 
     except KeyboardInterrupt:
         print("Program interrupted by user.")
     finally:
         print("Releasing resources...")
+        cam.MV_CC_StopGrabbing()
+        cam.MV_CC_CloseDevice()
+        cam.MV_CC_DestroyHandle()
+
         # ch:停止取流 | en:Stop grab image
         ret = cam.MV_CC_StopGrabbing()
         if ret != 0:
