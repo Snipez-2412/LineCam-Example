@@ -2,7 +2,6 @@
 
 import sys
 import os
-import msvcrt
 import ctypes
 import time
 import numpy as np
