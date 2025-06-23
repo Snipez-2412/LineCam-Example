@@ -301,7 +301,7 @@ if __name__ == "__main__":
 
         # Start grabbing in asynchronous mode
         ret = cam.MV_CC_RegisterImageCallBackEx(frame_callback_func, None)
-        if ret != 0:
+        if ret != 0:  
             print(f"Error: Failed to register callback! ret[0x{ret:x}]")
             raise Exception("Failed to register callback.")
 
@@ -321,9 +321,6 @@ if __name__ == "__main__":
         print("Program interrupted by user.")
     finally:
         print("Releasing resources...")
-        cam.MV_CC_StopGrabbing()
-        cam.MV_CC_CloseDevice()
-        cam.MV_CC_DestroyHandle()
 
         # ch:停止取流 | en:Stop grab image
         ret = cam.MV_CC_StopGrabbing()
